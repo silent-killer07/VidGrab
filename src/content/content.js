@@ -248,7 +248,6 @@ function reportMedia(url, title) {
     mediaType: url.includes('.m3u8') ? 'hls' : 'direct'
   });
 }
-}
 
 // 9. Listen for messages from background/popup
 try {
