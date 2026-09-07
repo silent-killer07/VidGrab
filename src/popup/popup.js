@@ -13,16 +13,16 @@ document.addEventListener('DOMContentLoaded', () => {
   
   const videoList = document.getElementById('videoList');
   const rescanBtn = document.getElementById('rescanBtn');
+  const refreshBtn = document.getElementById('refreshBtn');
   
   // Start scanning
   switchState('scanning');
   
-  // Ask background for detected media in current tab
-  chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-    if (tabs.length === 0) return;
-    const currentTab = tabs[0];
-    
-    setTimeout(() => {
+  function loadMedia() {
+    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+      if (tabs.length === 0) return;
+      const currentTab = tabs[0];
+      
       chrome.runtime.sendMessage(
         { type: 'GET_DETECTED_MEDIA', tabId: currentTab.id },
         (response) => {
@@ -34,7 +34,31 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         }
       );
-    }, 600);
+    });
+  }
+  
+  setTimeout(loadMedia, 600);
+  
+  refreshBtn.addEventListener('click', () => {
+    refreshBtn.classList.add('spinning');
+    switchState('scanning');
+    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+      if (tabs.length === 0) return;
+      
+      // Fire and forget, don't wait for callbacks that might hang
+      chrome.runtime.sendMessage({ type: 'CLEAR_MEDIA', tabId: tabs[0].id }, () => {
+        if (chrome.runtime.lastError) console.log(chrome.runtime.lastError.message);
+      });
+      
+      chrome.tabs.sendMessage(tabs[0].id, { type: 'FORCE_RESCAN' }, () => {
+        if (chrome.runtime.lastError) console.log(chrome.runtime.lastError.message);
+      });
+      
+      setTimeout(() => {
+        loadMedia();
+        refreshBtn.classList.remove('spinning');
+      }, 800);
+    });
   });
   
   rescanBtn.addEventListener('click', () => {
@@ -82,7 +106,7 @@ document.addEventListener('DOMContentLoaded', () => {
       
       // Set subtitle (show trimmed URL for context)
       // Set subtitle (show context about the source)
-      if (media.type === 'mse-stream' || (media.type === 'hls' && media.duration)) {
+      if (media.type === 'mse-stream' || ((media.type === 'hls' || media.type === 'dash') && media.duration)) {
         const durationStr = media.duration ? formatDuration(media.duration) : '';
         const resStr = media.resolution || '';
         subtitleEl.textContent = [resStr, durationStr].filter(Boolean).join(' • ') || 'Streaming Video';
@@ -93,7 +117,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const shortPath = pathParts.slice(-2).join('/');
           subtitleEl.textContent = `${urlObj.hostname}/${shortPath}`;
         } catch(e) {
-          subtitleEl.textContent = media.type === 'hls' ? 'HLS Stream' : 'Direct Video';
+          subtitleEl.textContent = media.type === 'hls' ? 'HLS Stream' : (media.type === 'dash' ? 'DASH Stream' : 'Direct Video');
         }
       }
       
@@ -103,6 +127,9 @@ document.addEventListener('DOMContentLoaded', () => {
         methodBadge.classList.add('hls');
       } else if (media.type === 'hls') {
         methodBadge.textContent = '⚡ HLS';
+        methodBadge.classList.add('hls');
+      } else if (media.type === 'dash') {
+        methodBadge.textContent = '⚡ DASH';
         methodBadge.classList.add('hls');
       } else {
         methodBadge.textContent = '📁 Direct';
@@ -165,6 +192,14 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           }
         );
+      // ─── DASH: No native parsing yet ──────────────────────────
+      } else if (media.type === 'dash') {
+        const opt = document.createElement('option');
+        opt.value = 'default';
+        opt.textContent = 'DASH Playlist (.mpd)';
+        qualitySelect.appendChild(opt);
+        sizeLabel.textContent = media.duration ? `(${formatDuration(media.duration)})` : '';
+        
       // ─── DIRECT: Single quality ─────────────────────────────────
       } else {
         const opt = document.createElement('option');
@@ -247,7 +282,13 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     
-    // ─── HLS DOWNLOAD (Future implementation) ───
+    // ─── DASH ALERT ───
+    if (media.type === 'dash') {
+      alert("DASH Streams (.mpd) cannot be downloaded natively by VidGrab yet. Please try another video source if available, or use a third-party tool like yt-dlp.");
+      return;
+    }
+    
+    // ─── HLS DOWNLOAD (Tier 1) ───
     switchState('downloading');
     document.getElementById('dl-title').textContent = media.title || 'video.mp4';
     document.getElementById('tier-badge').textContent = '⚡ Tier 1: HLS Download';

@@ -248,3 +248,18 @@ function reportMedia(url, title) {
     mediaType: url.includes('.m3u8') ? 'hls' : 'direct'
   });
 }
+}
+
+// 9. Listen for messages from background/popup
+try {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'FORCE_RESCAN') {
+      reportedUrls.clear(); // Clear local cache to allow re-detecting
+      scanDOMForVideos();
+      sendResponse({ success: true });
+    }
+    return true;
+  });
+} catch(e) {
+  // Ignored if context invalidated
+}

@@ -63,11 +63,28 @@ chrome.webRequest.onBeforeRequest.addListener(
     if (details.tabId < 0) return; // Ignore background/service worker requests
     if (!isTrackableMediaUrl(details.url)) return;
     
-    addDetectedMedia(details.tabId, {
-      url: details.url,
-      type: details.url.toLowerCase().includes('.m3u8') ? 'hls' : 'direct',
-      source: 'network'
-    });
+    const lowerUrl = details.url.toLowerCase();
+    
+    if (lowerUrl.includes('.m3u8')) {
+      addDetectedMedia(details.tabId, { url: details.url, type: 'hls', source: 'network' });
+    } else if (lowerUrl.includes('.mpd')) {
+      // PW and others often provide both DASH and HLS. We can't download DASH natively yet.
+      // Check if an equivalent HLS manifest exists!
+      const hlsUrl = details.url.replace(/\.mpd/i, '.m3u8').replace(/master/i, 'master'); // preserve casing if needed, though replace is case-insensitive for regex
+      fetch(hlsUrl, { method: 'HEAD' })
+        .then(res => {
+          if (res.ok) {
+            addDetectedMedia(details.tabId, { url: hlsUrl, type: 'hls', source: 'network-fallback' });
+          } else {
+            addDetectedMedia(details.tabId, { url: details.url, type: 'dash', source: 'network' });
+          }
+        })
+        .catch(() => {
+          addDetectedMedia(details.tabId, { url: details.url, type: 'dash', source: 'network' });
+        });
+    } else {
+      addDetectedMedia(details.tabId, { url: details.url, type: 'direct', source: 'network' });
+    }
   },
   { urls: ["<all_urls>"] }
 );
@@ -83,11 +100,11 @@ function addDetectedMedia(tabId, mediaInfo) {
   
   // Smart dedup & merging logic
   if (url.startsWith('blob:')) {
-    // 1. If we already found the true HLS manifest for this video, just enrich it with DOM metadata
-    const existingHls = tabData.detectedMedia.find(m => m.type === 'hls');
-    if (existingHls) {
-      if (mediaInfo.resolution && !existingHls.resolution) existingHls.resolution = mediaInfo.resolution;
-      if (mediaInfo.duration && !existingHls.duration) existingHls.duration = mediaInfo.duration;
+    // 1. If we already found the true HLS/DASH manifest for this video, just enrich it with DOM metadata
+    const existingNetwork = tabData.detectedMedia.find(m => m.type === 'hls' || m.type === 'dash');
+    if (existingNetwork) {
+      if (mediaInfo.resolution && !existingNetwork.resolution) existingNetwork.resolution = mediaInfo.resolution;
+      if (mediaInfo.duration && !existingNetwork.duration) existingNetwork.duration = mediaInfo.duration;
       return; // Deduplicated!
     }
     
@@ -99,12 +116,11 @@ function addDetectedMedia(tabId, mediaInfo) {
       existingMse.url = url;
       return; // Deduplicated!
     }
-  } else if (mediaInfo.type === 'hls') {
-    // 1. If we found an HLS manifest, and we have a DOM-detected MSE stream, UPGRADE it!
-    // This gives the user the best of both worlds: DOM metadata + actual downloadable manifest
+  } else if (mediaInfo.type === 'hls' || mediaInfo.type === 'dash') {
+    // 1. If we found a manifest, and we have a DOM-detected MSE stream, UPGRADE it!
     const existingMse = tabData.detectedMedia.find(m => m.type === 'mse-stream');
     if (existingMse) {
-      existingMse.type = 'hls';
+      existingMse.type = mediaInfo.type;
       existingMse.url = url;
       return; // Upgraded & Deduplicated!
     }
@@ -223,6 +239,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       }
     }
+  }
+  
+  if (message.type === 'CLEAR_MEDIA' && message.tabId) {
+    if (STATE.tabs.has(message.tabId)) {
+      STATE.tabs.get(message.tabId).detectedMedia = [];
+      updateBadge(message.tabId);
+    }
+    sendResponse({ success: true });
+    return true;
   }
   
   if (message.type === 'START_DIRECT_DOWNLOAD') {

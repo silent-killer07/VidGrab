@@ -57,14 +57,31 @@ header {
   -webkit-text-fill-color: transparent;
 }
 
-.settings-btn {
+.icon-btn {
   cursor: pointer;
   color: var(--text-secondary);
-  transition: color 0.2s;
+  transition: all 0.2s ease;
+  background: none;
+  border: none;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.settings-btn:hover {
+.icon-btn:hover {
   color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.icon-btn:active {
+  transform: scale(0.95);
+}
+
+@keyframes spin { 100% { transform: rotate(360deg); } }
+.refresh-btn.spinning svg {
+  animation: spin 1s linear infinite;
 }
 
 /* Container limits and scroll */
