@@ -136,6 +136,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (media.type === 'mse-stream') {
         methodBadge.textContent = '🎬 Stream';
         methodBadge.classList.add('hls');
+      } else if (media.type === 'yt-video') {
+        methodBadge.textContent = '▶️ YouTube';
+        methodBadge.classList.add('hls');
       } else if (media.type === 'hls') {
         methodBadge.textContent = '⚡ HLS';
         methodBadge.classList.add('hls');
@@ -162,6 +165,13 @@ document.addEventListener('DOMContentLoaded', () => {
           opt.textContent = `${res} (Current Playback)`;
           qualitySelect.appendChild(opt);
         }
+        sizeLabel.textContent = media.duration ? `(${formatDuration(media.duration)})` : '';
+        
+      } else if (media.type === 'yt-video') {
+        const opt = document.createElement('option');
+        opt.value = 'yt-best';
+        opt.textContent = 'Best MP4 (Companion Server)';
+        qualitySelect.appendChild(opt);
         sizeLabel.textContent = media.duration ? `(${formatDuration(media.duration)})` : '';
         
       } else if (media.type === 'hls') {
@@ -263,6 +273,29 @@ document.addEventListener('DOMContentLoaded', () => {
     
     if (media.type === 'mse-stream') {
       alert("MSE Streams (blob: URLs) cannot be downloaded directly. Please use the HLS or Direct Video card if one was detected for this video.");
+      return;
+    }
+
+    if (media.type === 'yt-video') {
+      alert("Fetching download link from Companion Server...");
+      fetch('http://localhost:3000/api/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: media.url })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.error) throw new Error(data.error);
+        chrome.runtime.sendMessage({
+          type: 'START_DIRECT_DOWNLOAD',
+          url: data.url,
+          filename: filename
+        });
+        switchTab('downloads');
+      })
+      .catch(err => {
+        alert("Companion Server Error: " + err.message + "\n\nMake sure the local server is running (node companion/server.js)");
+      });
       return;
     }
     

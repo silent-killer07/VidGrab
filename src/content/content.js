@@ -85,11 +85,13 @@ function scanDOMForVideos() {
       // Ask injector for available quality levels
       window.postMessage({ type: 'VIDGRAB_GET_QUALITIES' }, '*');
       
+      const isYouTube = window.location.hostname.includes('youtube.com');
+      
       safeSend({
         type: 'VIDGRAB_FOUND_MEDIA',
-        url: src,
+        url: isYouTube ? window.location.href : src,
         pageTitle: title,
-        mediaType: 'mse-stream',
+        mediaType: isYouTube ? 'yt-video' : 'mse-stream',
         resolution: resolution,
         duration: Math.round(mainVideo.duration)
       });
