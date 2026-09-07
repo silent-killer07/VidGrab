@@ -1,6 +1,8 @@
 // offscreen.js
 // Heavy lifting: fetching, decrypting, and merging segments
 
+const activeDownloads = new Map();
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== 'offscreen') return;
 
@@ -9,7 +11,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       startTier1Download(message.data);
       sendResponse({ status: 'started' });
       break;
-    // other tiers will be added here
+    case 'CANCEL_DOWNLOAD':
+      if (activeDownloads.has(message.id)) {
+        activeDownloads.get(message.id).isCancelled = true;
+      }
+      break;
   }
   return true;
 });
@@ -19,29 +25,63 @@ async function fetchAndParseM3U8(url) {
   const text = await response.text();
   const lines = text.split('\n');
   const segments = [];
-  let baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
+  
+  const urlObj = new URL(url);
+  const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
+  const rootUrl = urlObj.origin;
   
   for (let line of lines) {
     line = line.trim();
-    // In a real scenario we'd also parse #EXT-X-KEY for AES-128 decryption here
     if (!line || line.startsWith('#')) continue;
+    
     if (line.startsWith('http')) {
       segments.push(line);
+    } else if (line.startsWith('/')) {
+      segments.push(rootUrl + line); // Absolute path from domain root
     } else {
-      segments.push(baseUrl + line);
+      segments.push(baseUrl + line); // Relative path from playlist directory
     }
   }
   return segments;
 }
 
-let isCancelled = false;
-chrome.runtime.onMessage.addListener((message) => {
-  if (message.type === 'CANCEL_DOWNLOAD') isCancelled = true;
-});
+function reportProgress(state, pushedSegments, totalSegments) {
+  const elapsedSec = (Date.now() - state.startTime) / 1000;
+  if (elapsedSec < 1) return; // Prevent divide by zero and erratic initial speeds
+  
+  const speedBps = state.bytesDownloaded / elapsedSec;
+  const speedMBps = (speedBps / (1024 * 1024)).toFixed(1);
+  const percent = Math.round((pushedSegments / totalSegments) * 100);
+  
+  const remainingBytes = (state.bytesDownloaded / pushedSegments) * (totalSegments - pushedSegments);
+  const etaSec = Math.round(remainingBytes / speedBps) || 0;
+  
+  // Throttle messages to prevent IPC overload
+  if (Date.now() - state.lastReportTime > 500) {
+    state.lastReportTime = Date.now();
+    chrome.runtime.sendMessage({
+      type: 'DOWNLOAD_PROGRESS',
+      id: state.id,
+      progress: percent,
+      segmentsDownloaded: pushedSegments,
+      totalSegments: totalSegments,
+      speed: `${speedMBps} MB/s`,
+      eta: `${etaSec}s`
+    });
+  }
+}
 
 async function startTier1Download(data) {
-  const { url, title } = data;
-  isCancelled = false;
+  const { id, url, title } = data;
+  
+  const downloadState = {
+    id,
+    isCancelled: false,
+    startTime: Date.now(),
+    lastReportTime: 0,
+    bytesDownloaded: 0
+  };
+  activeDownloads.set(id, downloadState);
   
   console.log(`VidGrab Offscreen: Starting Tier 1 download for ${title}`);
   
@@ -60,47 +100,64 @@ async function startTier1Download(data) {
     };
     worker.postMessage({ type: 'INIT' });
     
-    const totalSegments = segments.length;
-    let startTime = Date.now();
-    let bytesDownloaded = 0;
+    // Concurrency Engine
+    const CONCURRENCY = 5; // 5 chunks at a time for high speed
+    let nextPushIndex = 0;
+    const downloadedBuffers = {};
+    let nextFetchIndex = 0;
+    let activeFetches = 0;
     
-    for (let i = 0; i < totalSegments; i++) {
-      if (isCancelled) {
-        worker.terminate();
-        return;
+    await new Promise((resolve, reject) => {
+      function spawn() {
+        if (downloadState.isCancelled) return reject(new Error("Cancelled by user"));
+        
+        while (activeFetches < CONCURRENCY && nextFetchIndex < segments.length) {
+          const i = nextFetchIndex++;
+          activeFetches++;
+          
+          fetch(segments[i])
+            .then(res => {
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              return res.arrayBuffer();
+            })
+            .then(tsBuffer => {
+              downloadState.bytesDownloaded += tsBuffer.byteLength;
+              downloadedBuffers[i] = tsBuffer;
+              
+              // Push strictly in order to the muxer
+              while (downloadedBuffers[nextPushIndex]) {
+                 worker.postMessage({ type: 'PUSH', data: downloadedBuffers[nextPushIndex] }, [downloadedBuffers[nextPushIndex]]);
+                 delete downloadedBuffers[nextPushIndex];
+                 nextPushIndex++;
+              }
+              
+              reportProgress(downloadState, nextPushIndex, segments.length);
+              activeFetches--;
+              
+              if (nextPushIndex === segments.length) {
+                resolve();
+              } else {
+                spawn();
+              }
+            })
+            .catch(err => {
+              if (!downloadState.isCancelled) {
+                downloadState.isCancelled = true;
+                reject(new Error(`Segment ${i} failed: ${err.message}`));
+              }
+            });
+        }
       }
-      
-      const tsResponse = await fetch(segments[i]);
-      if (!tsResponse.ok) throw new Error(`Failed to fetch segment ${i}`);
-      const tsBuffer = await tsResponse.arrayBuffer();
-      
-      bytesDownloaded += tsBuffer.byteLength;
-      
-      worker.postMessage({ type: 'PUSH', data: tsBuffer }, [tsBuffer]);
-      
-      // Calculate speed and ETA
-      const elapsedSec = (Date.now() - startTime) / 1000;
-      const speedBps = bytesDownloaded / elapsedSec;
-      const speedMBps = (speedBps / (1024 * 1024)).toFixed(1);
-      const percent = Math.round(((i + 1) / totalSegments) * 100);
-      const remainingBytes = (bytesDownloaded / (i + 1)) * (totalSegments - i - 1);
-      const etaSec = Math.round(remainingBytes / speedBps);
-      
-      chrome.runtime.sendMessage({
-        type: 'DOWNLOAD_PROGRESS',
-        progress: percent,
-        segmentsDownloaded: i + 1,
-        totalSegments: totalSegments,
-        speed: `${speedMBps} MB/s`,
-        eta: `${etaSec}s`
-      });
-    }
+      spawn();
+    });
     
     worker.postMessage({ type: 'FLUSH' });
     
     // Wait briefly for worker to flush remaining buffers
     await new Promise(r => setTimeout(r, 1000));
     worker.terminate();
+    
+    if (downloadState.isCancelled) throw new Error("Cancelled by user");
     
     const finalBlob = new Blob(mp4Chunks, { type: 'video/mp4' });
     const blobUrl = URL.createObjectURL(finalBlob);
@@ -111,16 +168,14 @@ async function startTier1Download(data) {
       filename: safeTitle,
       saveAs: false
     }, () => {
-      chrome.runtime.sendMessage({ type: 'DOWNLOAD_COMPLETE' });
-      // Clean up blob URL after download starts
+      chrome.runtime.sendMessage({ type: 'DOWNLOAD_COMPLETE', id });
       setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+      activeDownloads.delete(id);
     });
     
   } catch (error) {
     console.error("VidGrab Offscreen: Download failed", error);
-    chrome.runtime.sendMessage({
-      type: 'DOWNLOAD_ERROR',
-      error: error.message
-    });
+    chrome.runtime.sendMessage({ type: 'DOWNLOAD_ERROR', id, error: error.message });
+    activeDownloads.delete(id);
   }
 }

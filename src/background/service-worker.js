@@ -4,7 +4,11 @@
 const STATE = {
   // Store detected media per tab
   // tabId -> { detectedMedia: [] }
-  tabs: new Map()
+  tabs: new Map(),
+  
+  // Active background downloads
+  // downloadId -> { id, title, progress, speed, eta, status }
+  downloads: new Map()
 };
 
 // ─── Smart URL Filtering ──────────────────────────────────────────
@@ -265,17 +269,70 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   
   if (message.type === 'START_HLS_DOWNLOAD') {
+    const downloadId = Date.now().toString(); // unique enough for this scope
+    STATE.downloads.set(downloadId, {
+      id: downloadId,
+      title: message.filename || 'video',
+      progress: 0,
+      status: 'downloading',
+      speed: 'Starting...',
+      eta: '--',
+      size: message.size || '? MB'
+    });
+    
     // Ensure offscreen document exists and forward the message
     setupOffscreenDocument('src/offscreen/offscreen.html').then(() => {
       chrome.runtime.sendMessage({
         target: 'offscreen',
         type: 'START_DOWNLOAD_TIER1',
         data: {
+          id: downloadId,
           url: message.url,
           title: message.filename || 'video'
         }
       });
     });
+  }
+  
+  // Return active downloads to popup
+  if (message.type === 'GET_DOWNLOADS') {
+    sendResponse({ downloads: Array.from(STATE.downloads.values()) });
+    return true;
+  }
+  
+  // Track offscreen progress
+  if (message.type === 'DOWNLOAD_PROGRESS' && message.id) {
+    if (STATE.downloads.has(message.id)) {
+      const dl = STATE.downloads.get(message.id);
+      dl.progress = message.progress;
+      dl.speed = message.speed;
+      dl.eta = message.eta;
+    }
+  }
+  
+  if (message.type === 'DOWNLOAD_COMPLETE' && message.id) {
+    if (STATE.downloads.has(message.id)) {
+      STATE.downloads.get(message.id).status = 'complete';
+      STATE.downloads.get(message.id).progress = 100;
+    }
+  }
+  
+  if (message.type === 'DOWNLOAD_ERROR' && message.id) {
+    if (STATE.downloads.has(message.id)) {
+      STATE.downloads.get(message.id).status = 'error';
+      STATE.downloads.get(message.id).error = message.error;
+    }
+  }
+  
+  if (message.type === 'CANCEL_DOWNLOAD_BY_ID' && message.id) {
+    if (STATE.downloads.has(message.id)) {
+      STATE.downloads.get(message.id).status = 'cancelled';
+      chrome.runtime.sendMessage({
+        target: 'offscreen',
+        type: 'CANCEL_DOWNLOAD',
+        id: message.id
+      });
+    }
   }
   
   // Popup asks to parse an HLS manifest for qualities

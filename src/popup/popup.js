@@ -6,25 +6,56 @@ document.addEventListener('DOMContentLoaded', () => {
   const states = {
     scanning: document.getElementById('state-scanning'),
     empty: document.getElementById('state-empty'),
-    videos: document.getElementById('state-videos'),
-    downloading: document.getElementById('state-downloading'),
-    complete: document.getElementById('state-complete')
+    videos: document.getElementById('state-videos')
   };
   
   const videoList = document.getElementById('videoList');
+  const downloadsList = document.getElementById('downloadsList');
+  const downloadsEmpty = document.getElementById('downloads-empty');
   const rescanBtn = document.getElementById('rescanBtn');
   const refreshBtn = document.getElementById('refreshBtn');
   
+  // Tabs
+  const tabs = {
+    scanner: { btn: document.getElementById('tab-scanner'), view: document.getElementById('view-scanner') },
+    downloads: { btn: document.getElementById('tab-downloads'), view: document.getElementById('view-downloads') }
+  };
+  const dlBadge = document.getElementById('dl-badge');
+  
+  let currentTab = 'scanner';
+  let pollInterval = null;
+
+  function switchTab(tabId) {
+    currentTab = tabId;
+    Object.values(tabs).forEach(t => {
+      t.btn.classList.remove('active');
+      t.view.classList.remove('active');
+      t.view.classList.add('hidden');
+    });
+    tabs[tabId].btn.classList.add('active');
+    tabs[tabId].view.classList.remove('hidden');
+    tabs[tabId].view.classList.add('active');
+    
+    if (tabId === 'downloads') {
+      startPollingDownloads();
+    } else {
+      stopPollingDownloads();
+    }
+  }
+
+  tabs.scanner.btn.addEventListener('click', () => switchTab('scanner'));
+  tabs.downloads.btn.addEventListener('click', () => switchTab('downloads'));
+
   // Start scanning
   switchState('scanning');
   
   function loadMedia() {
-    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-      if (tabs.length === 0) return;
-      const currentTab = tabs[0];
+    chrome.tabs.query({active: true, currentWindow: true}, function(tabsList) {
+      if (tabsList.length === 0) return;
+      const currentTabId = tabsList[0].id;
       
       chrome.runtime.sendMessage(
-        { type: 'GET_DETECTED_MEDIA', tabId: currentTab.id },
+        { type: 'GET_DETECTED_MEDIA', tabId: currentTabId },
         (response) => {
           if (chrome.runtime.lastError || !response || !response.media || response.media.length === 0) {
             switchState('empty');
@@ -37,20 +68,21 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   
-  setTimeout(loadMedia, 600);
+  setTimeout(() => {
+    loadMedia();
+    fetchDownloads(true); // initial fetch to update badge
+  }, 600);
   
   refreshBtn.addEventListener('click', () => {
     refreshBtn.classList.add('spinning');
     switchState('scanning');
-    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-      if (tabs.length === 0) return;
+    chrome.tabs.query({active: true, currentWindow: true}, function(tabsList) {
+      if (tabsList.length === 0) return;
       
-      // Fire and forget, don't wait for callbacks that might hang
-      chrome.runtime.sendMessage({ type: 'CLEAR_MEDIA', tabId: tabs[0].id }, () => {
+      chrome.runtime.sendMessage({ type: 'CLEAR_MEDIA', tabId: tabsList[0].id }, () => {
         if (chrome.runtime.lastError) console.log(chrome.runtime.lastError.message);
       });
-      
-      chrome.tabs.sendMessage(tabs[0].id, { type: 'FORCE_RESCAN' }, () => {
+      chrome.tabs.sendMessage(tabsList[0].id, { type: 'FORCE_RESCAN' }, () => {
         if (chrome.runtime.lastError) console.log(chrome.runtime.lastError.message);
       });
       
@@ -62,24 +94,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   
   rescanBtn.addEventListener('click', () => {
-    // Re-trigger scan
     switchState('scanning');
-    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-      if (tabs.length === 0) return;
-      setTimeout(() => {
-        chrome.runtime.sendMessage(
-          { type: 'GET_DETECTED_MEDIA', tabId: tabs[0].id },
-          (response) => {
-            if (!response || !response.media || response.media.length === 0) {
-              switchState('empty');
-            } else {
-              renderVideos(response.media);
-              switchState('videos');
-            }
-          }
-        );
-      }, 600);
-    });
+    loadMedia();
   });
   
   function switchState(stateName) {
@@ -93,7 +109,6 @@ document.addEventListener('DOMContentLoaded', () => {
     
     mediaList.forEach((media, idx) => {
       const clone = template.content.cloneNode(true);
-      const card = clone.querySelector('.video-card');
       const titleEl = clone.querySelector('.video-title');
       const subtitleEl = clone.querySelector('.video-subtitle');
       const methodBadge = clone.querySelector('.method-badge');
@@ -101,11 +116,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const downloadBtn = clone.querySelector('.download-btn');
       const sizeLabel = clone.querySelector('.est-size');
       
-      // Set title
       titleEl.textContent = media.title || `Video ${idx + 1}`;
       
-      // Set subtitle (show trimmed URL for context)
-      // Set subtitle (show context about the source)
       if (media.type === 'mse-stream' || ((media.type === 'hls' || media.type === 'dash') && media.duration)) {
         const durationStr = media.duration ? formatDuration(media.duration) : '';
         const resStr = media.resolution || '';
@@ -121,7 +133,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
       
-      // Set badge
       if (media.type === 'mse-stream') {
         methodBadge.textContent = '🎬 Stream';
         methodBadge.classList.add('hls');
@@ -135,8 +146,6 @@ document.addEventListener('DOMContentLoaded', () => {
         methodBadge.textContent = '📁 Direct';
       }
       
-      // For HLS: fetch qualities from the manifest
-      // ─── MSE STREAM: Show current playing quality ──────────────
       if (media.type === 'mse-stream') {
         if (media.extractedQualities && media.extractedQualities.length > 0) {
           media.extractedQualities.forEach((q, i) => {
@@ -155,7 +164,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         sizeLabel.textContent = media.duration ? `(${formatDuration(media.duration)})` : '';
         
-      // ─── HLS: Fetch qualities from manifest ────────────────────
       } else if (media.type === 'hls') {
         qualitySelect.innerHTML = '<option value="loading">Loading qualities...</option>';
         qualitySelect.disabled = true;
@@ -179,7 +187,6 @@ document.addEventListener('DOMContentLoaded', () => {
               });
               
               updateDownloadButtonSize(qualitySelect, sizeLabel);
-              
               qualitySelect.addEventListener('change', () => {
                 updateDownloadButtonSize(qualitySelect, sizeLabel);
               });
@@ -192,7 +199,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           }
         );
-      // ─── DASH: No native parsing yet ──────────────────────────
       } else if (media.type === 'dash') {
         const opt = document.createElement('option');
         opt.value = 'default';
@@ -200,7 +206,6 @@ document.addEventListener('DOMContentLoaded', () => {
         qualitySelect.appendChild(opt);
         sizeLabel.textContent = media.duration ? `(${formatDuration(media.duration)})` : '';
         
-      // ─── DIRECT: Single quality ─────────────────────────────────
       } else {
         const opt = document.createElement('option');
         opt.value = 'default';
@@ -218,7 +223,6 @@ document.addEventListener('DOMContentLoaded', () => {
           .catch(() => {});
       }
       
-      // Unique radio group name per card
       const formatRadios = clone.querySelectorAll('input[name="format"]');
       formatRadios.forEach(radio => {
         radio.name = `format-${idx}`;
@@ -247,90 +251,139 @@ document.addEventListener('DOMContentLoaded', () => {
     const estSize = selected?.dataset?.size || '? MB';
     const filename = (media.title || 'video').replace(/[<>:"/\\|?*]+/g, '_') + '.mp4';
     
-    // ─── DIRECT FILE DOWNLOAD ───
     if (media.type === 'direct' || downloadUrl.includes('.mp4') || downloadUrl.includes('.webm')) {
-      switchState('downloading');
-      document.getElementById('dl-title').textContent = media.title || 'video.mp4';
-      document.getElementById('tier-badge').textContent = '📁 Direct Download';
-      
-      // We don't have progress events for native downloads yet, so we just show an indeterminate bar
-      document.getElementById('dl-percent').textContent = 'Native Download';
-      document.getElementById('dl-progress-bar').style.width = '100%';
-      document.getElementById('dl-progress-bar').style.animation = 'pulse 2s infinite';
-      document.getElementById('dl-size').textContent = `Size: ${estSize}`;
-      document.getElementById('dl-speed').textContent = 'Check Chrome Downloads';
-      document.getElementById('dl-eta').textContent = '';
-      
       chrome.runtime.sendMessage({
         type: 'START_DIRECT_DOWNLOAD',
         url: downloadUrl,
         filename: filename
       });
-      
-      setTimeout(() => {
-        switchState('complete');
-        document.getElementById('complete-filename').textContent = filename;
-        document.getElementById('complete-size').textContent = `Download started in browser`;
-      }, 3000);
-      
+      switchTab('downloads');
       return;
     }
     
-    // ─── MSE STREAM ALERT ───
     if (media.type === 'mse-stream') {
       alert("MSE Streams (blob: URLs) cannot be downloaded directly. Please use the HLS or Direct Video card if one was detected for this video.");
       return;
     }
     
-    // ─── DASH ALERT ───
     if (media.type === 'dash') {
       alert("DASH Streams (.mpd) cannot be downloaded natively by VidGrab yet. Please try another video source if available, or use a third-party tool like yt-dlp.");
       return;
     }
     
-    // ─── HLS DOWNLOAD (Tier 1) ───
-    switchState('downloading');
-    document.getElementById('dl-title').textContent = media.title || 'video.mp4';
-    document.getElementById('tier-badge').textContent = '⚡ Tier 1: HLS Download';
-    
+    // HLS DOWNLOAD
     chrome.runtime.sendMessage({
       type: 'START_HLS_DOWNLOAD',
       url: downloadUrl,
-      filename: filename
+      filename: filename,
+      size: estSize
     });
     
-    // Listen for real progress updates from background/offscreen
-    const progressListener = (message) => {
-      if (message.type === 'DOWNLOAD_PROGRESS') {
-        document.getElementById('dl-percent').textContent = message.progress + '%';
-        document.getElementById('dl-progress-bar').style.width = message.progress + '%';
-        document.getElementById('dl-size').textContent = `Segments: ${message.segmentsDownloaded}/${message.totalSegments}`;
-        document.getElementById('dl-speed').textContent = message.speed || '';
-        if (message.eta) document.getElementById('dl-eta').textContent = `ETA: ${message.eta}`;
-      } else if (message.type === 'DOWNLOAD_COMPLETE') {
-        chrome.runtime.onMessage.removeListener(progressListener);
-        switchState('complete');
-        document.getElementById('complete-filename').textContent = filename;
-        document.getElementById('complete-size').textContent = `Transmuxing complete. Saved!`;
-      } else if (message.type === 'DOWNLOAD_ERROR') {
-        chrome.runtime.onMessage.removeListener(progressListener);
-        alert(`Download failed: ${message.error}`);
-        switchState('videos');
-      }
-    };
-    chrome.runtime.onMessage.addListener(progressListener);
-    
-    document.getElementById('cancelDlBtn').onclick = () => {
-      chrome.runtime.onMessage.removeListener(progressListener);
-      chrome.runtime.sendMessage({ type: 'CANCEL_DOWNLOAD' });
-      switchState('videos');
-    };
+    switchTab('downloads');
   }
   
-  document.getElementById('closeBtn').addEventListener('click', () => {
-    window.close();
-  });
+  // ─── DOWNLOADS POLLING ───
+  function startPollingDownloads() {
+    fetchDownloads();
+    if (!pollInterval) {
+      pollInterval = setInterval(fetchDownloads, 1000);
+    }
+  }
   
+  function stopPollingDownloads() {
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+  }
+  
+  function fetchDownloads(updateBadgeOnly = false) {
+    chrome.runtime.sendMessage({ type: 'GET_DOWNLOADS' }, (response) => {
+      if (chrome.runtime.lastError) return;
+      if (!response || !response.downloads) return;
+      
+      const activeCount = response.downloads.filter(d => d.status === 'downloading').length;
+      if (activeCount > 0) {
+        dlBadge.textContent = activeCount;
+        dlBadge.classList.remove('hidden');
+      } else {
+        dlBadge.classList.add('hidden');
+      }
+      
+      if (!updateBadgeOnly && currentTab === 'downloads') {
+        renderDownloads(response.downloads);
+      }
+    });
+  }
+  
+  function renderDownloads(downloads) {
+    if (downloads.length === 0) {
+      downloadsList.innerHTML = '';
+      downloadsEmpty.classList.remove('hidden');
+      return;
+    }
+    
+    downloadsEmpty.classList.add('hidden');
+    
+    // Sort active downloads to top
+    downloads.sort((a, b) => {
+      if (a.status === 'downloading' && b.status !== 'downloading') return -1;
+      if (a.status !== 'downloading' && b.status === 'downloading') return 1;
+      return parseInt(b.id) - parseInt(a.id);
+    });
+    
+    // To avoid flickering, we should selectively update existing elements or just re-render.
+    // Given the simplicity, we'll re-render but preserve structure to avoid losing focus/clicks.
+    downloadsList.innerHTML = '';
+    const template = document.getElementById('download-card-template');
+    
+    downloads.forEach(dl => {
+      const clone = template.content.cloneNode(true);
+      clone.querySelector('.video-title').textContent = dl.title;
+      
+      const barFill = clone.querySelector('.progress-bar-fill');
+      const percentEl = clone.querySelector('.dl-percent');
+      const sizeEl = clone.querySelector('.dl-size');
+      const speedEl = clone.querySelector('.dl-speed');
+      const etaEl = clone.querySelector('.dl-eta');
+      const cancelBtn = clone.querySelector('.cancel-dl-btn');
+      
+      barFill.style.width = `${dl.progress}%`;
+      percentEl.textContent = `${dl.progress}%`;
+      
+      if (dl.status === 'downloading') {
+        sizeEl.textContent = dl.size;
+        speedEl.textContent = dl.speed || '-- MB/s';
+        etaEl.textContent = dl.eta ? `ETA: ${dl.eta}` : 'ETA: --';
+        
+        cancelBtn.addEventListener('click', () => {
+          chrome.runtime.sendMessage({ type: 'CANCEL_DOWNLOAD_BY_ID', id: dl.id });
+          fetchDownloads();
+        });
+      } else if (dl.status === 'complete') {
+        barFill.style.background = 'linear-gradient(90deg, #00D2FF 0%, #3A7BD5 100%)';
+        sizeEl.textContent = 'Complete';
+        speedEl.textContent = '';
+        etaEl.textContent = '';
+        cancelBtn.style.display = 'none';
+      } else if (dl.status === 'error') {
+        barFill.style.background = 'var(--error)';
+        sizeEl.textContent = 'Error';
+        speedEl.textContent = dl.error || 'Failed';
+        etaEl.textContent = '';
+        cancelBtn.style.display = 'none';
+      } else if (dl.status === 'cancelled') {
+        barFill.style.background = 'var(--text-secondary)';
+        sizeEl.textContent = 'Cancelled';
+        speedEl.textContent = '';
+        etaEl.textContent = '';
+        cancelBtn.style.display = 'none';
+      }
+      
+      downloadsList.appendChild(clone);
+    });
+  }
+
   function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
     const k = 1024;
