@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>VidGrab</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <header>
+      <div class="logo">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="url(#grad1)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <defs>
+            <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" style="stop-color:#6C63FF;stop-opacity:1" />
+              <stop offset="100%" style="stop-color:#00D2FF;stop-opacity:1" />
+            </linearGradient>
+          </defs>
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="7 10 12 15 17 10"></polyline>
+          <line x1="12" y1="15" x2="12" y2="3"></line>
+        </svg>
+        <h1>VidGrab</h1>
+      </div>
+    </header>
+
+    <main class="popup-body">
+      <!-- STATE: Scanning -->
+      <div id="state-scanning" class="state-view">
+        <div class="loader"></div>
+        <p>Scanning for videos...</p>
+      </div>
+
+      <!-- STATE: No Videos Found -->
+      <div id="state-empty" class="state-view hidden">
+        <div class="empty-icon">😕</div>
+        <h2>No videos found</h2>
+        <p>Try playing the video first, then click this extension again.</p>
+        <button id="rescanBtn" class="btn secondary">Rescan Page</button>
+      </div>
+
+      <!-- STATE: Videos Detected -->
+      <div id="state-videos" class="state-view hidden">
+        <div id="videoList" class="video-list">
+          <!-- Video cards will be injected here -->
+        </div>
+      </div>
+
+      <!-- STATE: Downloading -->
+      <div id="state-downloading" class="state-view hidden">
+        <h2 id="dl-title" class="truncate">Downloading...</h2>
+        
+        <div class="progress-container">
+          <div class="progress-bar-bg">
+            <div id="dl-progress-bar" class="progress-bar-fill" style="width: 0%"></div>
+          </div>
+          <div class="progress-stats">
+            <span id="dl-percent">0%</span>
+            <span id="dl-size">0 MB / ? MB</span>
+          </div>
+          <div class="progress-stats details">
+            <span id="dl-speed">-- MB/s</span>
+            <span id="dl-eta">ETA: --</span>
+          </div>
+        </div>
+
+        <div id="tier-badge" class="badge">Tier 1: Fast Download</div>
+
+        <div class="action-buttons">
+          <button id="cancelDlBtn" class="btn danger">Cancel</button>
+        </div>
+      </div>
+      
+      <!-- STATE: Complete -->
+      <div id="state-complete" class="state-view hidden">
+        <div class="success-icon">
+          <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="#00D2FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+          </svg>
+        </div>
+        <h2>Download Complete!</h2>
+        <p id="complete-filename" class="truncate">video.mp4</p>
+        <p id="complete-size">Size: -- MB</p>
+        <button id="closeBtn" class="btn primary">Done</button>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Template for Video Card -->
+  <template id="video-card-template">
+    <div class="video-card">
+      <div class="card-header">
+        <h3 class="video-title truncate">Video Title</h3>
+        <span class="badge method-badge">Tier 1</span>
+      </div>
+      <p class="video-subtitle truncate">source</p>
+      
+      <div class="format-toggle">
+        <label class="radio-label">
+          <input type="radio" name="format" value="mp4" checked>
+          <span>🎬 MP4 Video</span>
+        </label>
+        <label class="radio-label">
+          <input type="radio" name="format" value="mp3">
+          <span>🎵 MP3 Audio</span>
+        </label>
+      </div>
+
+      <div class="quality-selector">
+        <label>Quality:</label>
+        <select class="quality-select">
+          <!-- Options injected here -->
+        </select>
+      </div>
+
+      <button class="btn primary download-btn">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 8px;">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="7 10 12 15 17 10"></polyline>
+          <line x1="12" y1="15" x2="12" y2="3"></line>
+        </svg>
+        Download <span class="est-size">(~MB)</span>
+      </button>
+    </div>
+  </template>
+
+  <script src="popup.js"></script>
+</body>
+</html>
